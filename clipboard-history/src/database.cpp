@@ -1,0 +1,280 @@
+#include "database.h"
+#include "../vendor/sqlite3.h"
+#include <windows.h>
+#include <cstdio>
+
+// ponytail: single global handle, per-connection pool if contention ever matters
+static sqlite3* g_db = nullptr;
+
+// ── helpers ──────────────────────────────────────────────────────────
+
+static int count_callback(void* data, int argc, char** argv, char**) {
+    if (argc > 0 && argv[0]) *(int*)data = atoi(argv[0]);
+    return 0;
+}
+
+static int exists_callback(void* data, int argc, char** argv, char**) {
+    *(bool*)data = (argc > 0 && argv[0]);
+    return 0;
+}
+
+static bool check_duplicate(const std::wstring& text) {
+    // Check if text matches the most recent entry
+    sqlite3_stmt* stmt;
+    const char* sql = "SELECT text_content FROM clipboard_history ORDER BY id DESC LIMIT 1";
+    if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
+    bool dup = false;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char* last = (const char*)sqlite3_column_text(stmt, 0);
+        if (last) {
+            std::wstring lastText;
+            // last stored as UTF-8 in DB; decode for comparison is complex
+            // Simplify: store text as UTF-8 and compare as UTF-8
+            std::string textUtf8;
+            int len = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, nullptr, 0, nullptr, nullptr);
+            textUtf8.resize(len - 1);
+            WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, &textUtf8[0], len, nullptr, nullptr);
+            dup = (textUtf8 == last);
+        }
+    }
+    sqlite3_finalize(stmt);
+    return dup;
+}
+
+// ── public API ───────────────────────────────────────────────────────
+
+bool db_init(const wchar_t* dbPath) {
+    char pathUtf8[512];
+    WideCharToMultiByte(CP_UTF8, 0, dbPath, -1, pathUtf8, sizeof(pathUtf8), nullptr, nullptr);
+
+    int rc = sqlite3_open(pathUtf8, &g_db);
+    if (rc != SQLITE_OK) return false;
+
+    // WAL mode for better concurrent read performance
+    sqlite3_exec(g_db, "PRAGMA journal_mode=WAL;", nullptr, nullptr, nullptr);
+    sqlite3_exec(g_db, "PRAGMA synchronous=NORMAL;", nullptr, nullptr, nullptr);
+
+    const char* createSql =
+        "CREATE TABLE IF NOT EXISTS clipboard_history ("
+        "  id           INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  content_type INTEGER NOT NULL,"
+        "  text_content TEXT,"
+        "  image_blob   BLOB,"
+        "  thumb_blob   BLOB,"
+        "  created_at   INTEGER NOT NULL,"
+        "  pinned       INTEGER DEFAULT 0"
+        ");"
+        "CREATE INDEX IF NOT EXISTS idx_created_at ON clipboard_history(created_at);";
+
+    rc = sqlite3_exec(g_db, createSql, nullptr, nullptr, nullptr);
+    if (rc != SQLITE_OK) return false;
+
+    // Migration: add thumb_blob column for existing databases
+    sqlite3_exec(g_db,
+        "ALTER TABLE clipboard_history ADD COLUMN thumb_blob BLOB;",
+        nullptr, nullptr, nullptr);  // ignore error if column already exists
+
+    // Clean entries older than 30 days (unpinned only)
+    char expireSql[256];
+    snprintf(expireSql, sizeof(expireSql),
+        "DELETE FROM clipboard_history WHERE created_at < %lld AND pinned = 0;",
+        (long long)(time(nullptr) - 30 * 24 * 3600));
+    sqlite3_exec(g_db, expireSql, nullptr, nullptr, nullptr);
+
+    return true;
+}
+
+int db_insert_text(const std::wstring& text) {
+    if (!g_db) return -1;
+
+    // Convert to UTF-8
+    int len = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    std::string utf8(len - 1, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, &utf8[0], len, nullptr, nullptr);
+
+    // Skip empty text
+    if (utf8.empty()) return -1;
+
+    const char* sql = "INSERT INTO clipboard_history (content_type, text_content, created_at) VALUES (0, ?, ?);";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) != SQLITE_OK) return -1;
+    sqlite3_bind_text(stmt, 1, utf8.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 2, (long long)time(nullptr));
+
+    int id = -1;
+    if (sqlite3_step(stmt) == SQLITE_DONE)
+        id = (int)sqlite3_last_insert_rowid(g_db);
+    sqlite3_finalize(stmt);
+    return id;
+}
+
+int db_insert_image(const uint8_t* data, size_t size,
+                    const uint8_t* thumb_data, size_t thumb_size) {
+    if (!g_db) return -1;
+    if (size == 0) return -1;
+
+    // Dedup: skip if same size as latest image (ponytail: simple size check, hash if collisions matter)
+    sqlite3_stmt* checkStmt;
+    const char* checkSql = "SELECT image_blob FROM clipboard_history WHERE content_type=1 ORDER BY id DESC LIMIT 1";
+    if (sqlite3_prepare_v2(g_db, checkSql, -1, &checkStmt, nullptr) == SQLITE_OK) {
+        if (sqlite3_step(checkStmt) == SQLITE_ROW) {
+            int blobSize = sqlite3_column_bytes(checkStmt, 0);
+            if (blobSize == (int)size) {
+                sqlite3_finalize(checkStmt);
+                return -1; // likely same image, skip
+            }
+        }
+        sqlite3_finalize(checkStmt);
+    }
+
+    const char* sql = "INSERT INTO clipboard_history (content_type, image_blob, thumb_blob, created_at)"
+                      " VALUES (1, ?, ?, ?);";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) != SQLITE_OK) return -1;
+    sqlite3_bind_blob(stmt, 1, data, (int)size, SQLITE_TRANSIENT);
+    if (thumb_data && thumb_size > 0)
+        sqlite3_bind_blob(stmt, 2, thumb_data, (int)thumb_size, SQLITE_TRANSIENT);
+    else
+        sqlite3_bind_null(stmt, 2);
+    sqlite3_bind_int64(stmt, 3, (long long)time(nullptr));
+
+    int id = -1;
+    if (sqlite3_step(stmt) == SQLITE_DONE)
+        id = (int)sqlite3_last_insert_rowid(g_db);
+    sqlite3_finalize(stmt);
+    return id;
+}
+
+std::vector<ClipEntry> db_get_history(const std::wstring& search) {
+    std::vector<ClipEntry> results;
+    if (!g_db) return results;
+
+    // Build query: pinned first, then by id desc (newest first)
+    // IMPORTANT: load thumb_blob (small) for list display, NOT image_blob (large).
+    // Full image is loaded on-demand via db_get_image_blob() when user double-clicks.
+    std::string sql;
+    if (search.empty()) {
+        sql = "SELECT id, content_type, text_content, thumb_blob, created_at, pinned "
+              "FROM clipboard_history ORDER BY pinned DESC, id DESC LIMIT 2000;";
+    } else {
+        // Search in text_content
+        char searchUtf8[512];
+        WideCharToMultiByte(CP_UTF8, 0, search.c_str(), -1, searchUtf8, sizeof(searchUtf8), nullptr, nullptr);
+        char escaped[1024];
+        char* q = escaped;
+        *q++ = '%';
+        for (char* p = searchUtf8; *p; p++) {
+            if (*p == '\'' || *p == '%' || *p == '_') *q++ = '\\';
+            *q++ = *p;
+        }
+        *q++ = '%';
+        *q = '\0';
+
+        char buf[2048];
+        snprintf(buf, sizeof(buf),
+            "SELECT id, content_type, text_content, thumb_blob, created_at, pinned "
+            "FROM clipboard_history WHERE text_content LIKE '%s' ESCAPE '\\' "
+            "ORDER BY pinned DESC, id DESC LIMIT 500;",
+            escaped);
+        sql = buf;
+    }
+
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(g_db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) return results;
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        ClipEntry e;
+        e.id = sqlite3_column_int(stmt, 0);
+        e.content_type = sqlite3_column_int(stmt, 1);
+
+        if (e.content_type == 0) {
+            const char* txt = (const char*)sqlite3_column_text(stmt, 2);
+            if (txt) {
+                // Convert UTF-8 back to wide string
+                int wlen = MultiByteToWideChar(CP_UTF8, 0, txt, -1, nullptr, 0);
+                e.text.resize(wlen - 1);
+                MultiByteToWideChar(CP_UTF8, 0, txt, -1, &e.text[0], wlen);
+            }
+        } else {
+            const uint8_t* blob = (const uint8_t*)sqlite3_column_blob(stmt, 3);
+            int blobSize = sqlite3_column_bytes(stmt, 3);
+            if (blob && blobSize > 0)
+                e.thumb_data.assign(blob, blob + blobSize);
+        }
+
+        e.created_at = (time_t)sqlite3_column_int64(stmt, 4);
+        e.pinned = sqlite3_column_int(stmt, 5) != 0;
+        results.push_back(std::move(e));
+    }
+
+    sqlite3_finalize(stmt);
+    return results;
+}
+
+void db_delete_entry(int id) {
+    if (!g_db) return;
+    char sql[128];
+    snprintf(sql, sizeof(sql), "DELETE FROM clipboard_history WHERE id=%d;", id);
+    sqlite3_exec(g_db, sql, nullptr, nullptr, nullptr);
+}
+
+void db_toggle_pin(int id) {
+    if (!g_db) return;
+    char sql[128];
+    snprintf(sql, sizeof(sql),
+        "UPDATE clipboard_history SET pinned = 1 - pinned WHERE id=%d;", id);
+    sqlite3_exec(g_db, sql, nullptr, nullptr, nullptr);
+}
+
+ClipEntry db_get_latest() {
+    ClipEntry e = {};
+    if (!g_db) return e;
+
+    const char* sql = "SELECT id, content_type, text_content, created_at, pinned "
+                      "FROM clipboard_history ORDER BY id DESC LIMIT 1;";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            e.id = sqlite3_column_int(stmt, 0);
+            e.content_type = sqlite3_column_int(stmt, 1);
+            if (e.content_type == 0) {
+                const char* txt = (const char*)sqlite3_column_text(stmt, 2);
+                if (txt) {
+                    int wlen = MultiByteToWideChar(CP_UTF8, 0, txt, -1, nullptr, 0);
+                    e.text.resize(wlen - 1);
+                    MultiByteToWideChar(CP_UTF8, 0, txt, -1, &e.text[0], wlen);
+                }
+            }
+            e.created_at = (time_t)sqlite3_column_int64(stmt, 3);
+            e.pinned = sqlite3_column_int(stmt, 4) != 0;
+        }
+        sqlite3_finalize(stmt);
+    }
+    return e;
+}
+
+std::vector<uint8_t> db_get_image_blob(int id) {
+    std::vector<uint8_t> result;
+    if (!g_db) return result;
+
+    const char* sql = "SELECT image_blob FROM clipboard_history WHERE id=?;";
+    sqlite3_stmt* stmt;
+    if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) != SQLITE_OK) return result;
+    sqlite3_bind_int(stmt, 1, id);
+
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        const uint8_t* blob = (const uint8_t*)sqlite3_column_blob(stmt, 0);
+        int blobSize = sqlite3_column_bytes(stmt, 0);
+        if (blob && blobSize > 0)
+            result.assign(blob, blob + blobSize);
+    }
+    sqlite3_finalize(stmt);
+    return result;
+}
+
+void db_close() {
+    if (g_db) {
+        sqlite3_close(g_db);
+        g_db = nullptr;
+    }
+}

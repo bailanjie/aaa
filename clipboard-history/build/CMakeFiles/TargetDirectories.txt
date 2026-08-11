@@ -1,0 +1,5 @@
+D:/aaa/clipboard-history/build/CMakeFiles/sqlite3.dir
+D:/aaa/clipboard-history/build/CMakeFiles/ClipboardHistory.dir
+D:/aaa/clipboard-history/build/CMakeFiles/INSTALL.dir
+D:/aaa/clipboard-history/build/CMakeFiles/ALL_BUILD.dir
+D:/aaa/clipboard-history/build/CMakeFiles/ZERO_CHECK.dir
