@@ -200,6 +200,14 @@ static void on_clipboard_change() {
         return;
     }
 
+    // Try file paths
+    std::vector<std::wstring> files = clipboard_read_files();
+    if (!files.empty()) {
+        db_insert_files(files);
+        card_panel_reload(g_hCardPanel);
+        return;
+    }
+
     // Try image
     std::vector<uint8_t> thumb;
     std::vector<uint8_t> png = clipboard_read_image_png(&thumb);

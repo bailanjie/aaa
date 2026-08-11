@@ -4,6 +4,14 @@
 
 #pragma comment(lib, "gdiplus.lib")
 
+// DROPFILES struct (from shellapi.h, defined here to avoid WINVER guards)
+typedef struct {
+    DWORD pFiles;
+    POINT pt;
+    BOOL  fNC;
+    BOOL  fWide;
+} DROPFILES, *LPDROPFILES;
+
 // ── clipboard change listener ────────────────────────────────────────
 
 bool clipboard_start(HWND hwnd) {
@@ -178,6 +186,32 @@ std::vector<uint8_t> clipboard_read_image_png(std::vector<uint8_t>* out_thumb) {
     return result;
 }
 
+// ── file paths (CF_HDROP) ────────────────────────────────────────────
+
+std::vector<std::wstring> clipboard_read_files() {
+    std::vector<std::wstring> result;
+    if (!OpenClipboard(nullptr)) return result;
+
+    if (IsClipboardFormatAvailable(CF_HDROP)) {
+        HANDLE hData = GetClipboardData(CF_HDROP);
+        if (hData) {
+            HDROP hDrop = (HDROP)GlobalLock(hData);
+            if (hDrop) {
+                UINT count = DragQueryFileW(hDrop, 0xFFFFFFFF, nullptr, 0);
+                for (UINT i = 0; i < count; i++) {
+                    UINT len = DragQueryFileW(hDrop, i, nullptr, 0);
+                    std::wstring path(len, L'\0');
+                    DragQueryFileW(hDrop, i, &path[0], len + 1);
+                    result.push_back(path);
+                }
+                GlobalUnlock(hData);
+            }
+        }
+    }
+    CloseClipboard();
+    return result;
+}
+
 // ── self-change guard ────────────────────────────────────────────────
 
 // ponytail: simple flag, atomic if multiple clipboard watchers ever added
@@ -280,6 +314,43 @@ bool clipboard_set_image(const uint8_t* png_data, size_t size) {
     DeleteObject(hBmp);
     delete bmp;
     pStream->Release();
+    CloseClipboard();
+    return true;
+}
+
+bool clipboard_set_files(const std::vector<std::wstring>& paths) {
+    g_self_change = true;
+    if (!OpenClipboard(nullptr)) { g_self_change = false; return false; }
+    EmptyClipboard();
+
+    // Calculate buffer size for DROPFILES + path list (double-null terminated)
+    size_t totalChars = 1; // final null terminator
+    for (const auto& p : paths) totalChars += p.size() + 1;
+
+    size_t bufSize = sizeof(DROPFILES) + totalChars * sizeof(wchar_t);
+    HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bufSize);
+    if (!hMem) { g_self_change = false; CloseClipboard(); return false; }
+
+    DROPFILES* pDrop = (DROPFILES*)GlobalLock(hMem);
+    pDrop->pFiles = sizeof(DROPFILES);
+    pDrop->pt = { 0, 0 };
+    pDrop->fNC = FALSE;
+    pDrop->fWide = TRUE;
+
+    wchar_t* pPaths = (wchar_t*)((BYTE*)pDrop + sizeof(DROPFILES));
+    wchar_t* dst = pPaths;
+    for (const auto& p : paths) {
+        wcscpy_s(dst, p.size() + 1, p.c_str());
+        dst += p.size() + 1;
+    }
+    *dst = L'\0'; // final null
+
+    GlobalUnlock(hMem);
+
+    if (!SetClipboardData(CF_HDROP, hMem)) {
+        GlobalFree(hMem);
+        g_self_change = false;
+    }
     CloseClipboard();
     return true;
 }
