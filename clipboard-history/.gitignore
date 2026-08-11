@@ -1,0 +1,25 @@
+# 编译产生的临时文件和exe（别传，别人自己编译）
+build/
+*.exe
+*.dll
+*.obj
+*.pdb
+*.ilk
+*.lib
+*.tlog
+
+# IDE配置文件（如果你用VS或VSCode）
+.vs/
+.vscode/
+*.user
+*.vcxproj
+*.filters
+
+# 数据库文件（别传本地测试数据）
+*.db
+*.sqlite
+*.sqlite3
+
+# 系统自带垃圾
+Thumbs.db
+.DS_Store
