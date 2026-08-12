@@ -25,3 +25,6 @@ build/
 # 系统自带垃圾
 Thumbs.db
 .DS_Store
+
+# Windows 保留设备名（Git Bash 跑 build.bat 会误生成）
+nul

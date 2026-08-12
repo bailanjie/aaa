@@ -4,6 +4,10 @@ project(ClipboardHistory LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Static CRT (/MT): no VC++ redistributable needed, truly single-file exe.
+# Must be set before any target is created to take effect.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 # SQLite amalgamation — compiled as C
 add_library(sqlite3 STATIC vendor/sqlite3.c)
 target_include_directories(sqlite3 PUBLIC vendor)
@@ -51,8 +55,6 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 if(MSVC)
     # /utf-8: treat source files as UTF-8, emit UTF-8 string literals
     target_compile_options(${PROJECT_NAME} PRIVATE /utf-8)
-    # Static CRT: no VC++ redistributable needed, truly single-file exe
-    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
     target_compile_options(${PROJECT_NAME} PRIVATE /W3)
     # Link as Windows GUI app (no console)
     set_target_properties(${PROJECT_NAME} PROPERTIES
