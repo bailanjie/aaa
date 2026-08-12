@@ -1,3 +1,11 @@
+# 构建产物目录及生成文件（clipboard-history/build）
+build/
+*.dll
+*.lib
+*.tlog
+*.vcxproj
+*.filters
+
 # 编译产生的临时文件和exe（别传，别人自己编译）
 *.exe
 *.obj

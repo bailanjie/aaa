@@ -7,6 +7,7 @@
 #include <shlobj.h>
 #include <cstdio>
 
+#include "resource.h"
 #include "database.h"
 #include "clipboard_monitor.h"
 #include "card_panel.h"
@@ -37,6 +38,7 @@ static HWND       g_hCardPanel  = nullptr;
 static NOTIFYICONDATAW g_nid    = {};
 static bool       g_autoStart   = false;
 static ULONG_PTR  g_gdiToken    = 0;
+static float      g_mainScale   = 1.0f;
 
 // ── helpers ──────────────────────────────────────────────────────────
 
@@ -138,8 +140,8 @@ static void save_window_pos() {
 static void restore_window_pos() {
     int x = (int)reg_get_dword(HKEY_CURRENT_USER, REG_KEY_APP, L"WindowX", CW_USEDEFAULT);
     int y = (int)reg_get_dword(HKEY_CURRENT_USER, REG_KEY_APP, L"WindowY", CW_USEDEFAULT);
-    int w = (int)reg_get_dword(HKEY_CURRENT_USER, REG_KEY_APP, L"WindowW", 520);
-    int h = (int)reg_get_dword(HKEY_CURRENT_USER, REG_KEY_APP, L"WindowH", 580);
+    int w = (int)reg_get_dword(HKEY_CURRENT_USER, REG_KEY_APP, L"WindowW", (int)(520 * g_mainScale));
+    int h = (int)reg_get_dword(HKEY_CURRENT_USER, REG_KEY_APP, L"WindowH", (int)(580 * g_mainScale));
     if (x == (int)CW_USEDEFAULT || y == (int)CW_USEDEFAULT) {
         // Center on screen
         int sw = GetSystemMetrics(SM_CXSCREEN);
@@ -159,7 +161,7 @@ static void tray_add(HWND hwnd) {
     g_nid.uID = ID_TRAY_ICON;
     g_nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     g_nid.uCallbackMessage = WM_TRAYICON;
-    g_nid.hIcon = LoadIcon(nullptr, IDI_APPLICATION);  // ponytail: system icon, swap with custom later
+    g_nid.hIcon = LoadIcon((HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE), MAKEINTRESOURCE(IDI_APP_ICON));
     wcscpy_s(g_nid.szTip, APP_TITLE);
     Shell_NotifyIconW(NIM_ADD, &g_nid);
 }
@@ -358,6 +360,12 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR pCmdLine, int nCmdShow
     Gdiplus::GdiplusStartupInput gdiInput;
     Gdiplus::GdiplusStartup(&g_gdiToken, &gdiInput, nullptr);
 
+    // Enable Per-Monitor DPI awareness so text renders at native resolution
+    if (!SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)) {
+        SetProcessDPIAware();
+    }
+    g_mainScale = GetDpiForSystem() / 96.0f;
+
     // Init common controls (for potential future use)
     INITCOMMONCONTROLSEX icex = { sizeof(icex), ICC_STANDARD_CLASSES };
     InitCommonControlsEx(&icex);
@@ -368,7 +376,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR pCmdLine, int nCmdShow
     wc.style = CS_DBLCLKS;
     wc.lpfnWndProc = MainWndProc;
     wc.hInstance = hInstance;
-    wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
+    wc.hIcon = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_APP_ICON));
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     wc.lpszClassName = L"ClipboardHistoryMain";
@@ -377,7 +385,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR pCmdLine, int nCmdShow
     // Create main window — start hidden (tray mode)
     HWND hwnd = CreateWindowExW(0, L"ClipboardHistoryMain", APP_TITLE,
         WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX,
-        CW_USEDEFAULT, CW_USEDEFAULT, 520, 600,
+        CW_USEDEFAULT, CW_USEDEFAULT,
+        (int)(520 * g_mainScale), (int)(600 * g_mainScale),
         nullptr, nullptr, hInstance, nullptr);
 
     if (!hwnd) {

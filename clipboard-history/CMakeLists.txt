@@ -23,6 +23,7 @@ set(SOURCES
     src/database.cpp
     src/clipboard_monitor.cpp
     src/card_panel.cpp
+    resource.rc
 )
 
 add_executable(${PROJECT_NAME} WIN32 ${SOURCES})
@@ -30,7 +31,12 @@ add_executable(${PROJECT_NAME} WIN32 ${SOURCES})
 target_include_directories(${PROJECT_NAME} PRIVATE
     src
     vendor
+    .
 )
+
+# Unicode app: make unsuffixed Win32 APIs (DefWindowProc, LoadIcon, …) resolve
+# to the wide (W) variants to match the L"" strings used everywhere.
+target_compile_definitions(${PROJECT_NAME} PRIVATE UNICODE _UNICODE)
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
     sqlite3
@@ -44,7 +50,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 # Windows-specific settings
 if(MSVC)
     # /utf-8: treat source files as UTF-8, emit UTF-8 string literals
-    add_compile_options("/utf-8")
+    target_compile_options(${PROJECT_NAME} PRIVATE /utf-8)
     # Static CRT: no VC++ redistributable needed, truly single-file exe
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
     target_compile_options(${PROJECT_NAME} PRIVATE /W3)

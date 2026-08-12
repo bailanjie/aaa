@@ -34,6 +34,11 @@ static const Gdiplus::Color DIM_COLOR(150, 150, 150);
 static const Gdiplus::Color DELETE_COLOR(220, 80, 80);
 static const Gdiplus::Color SEPARATOR_COLOR(220, 225, 230);
 
+// ── DPI scaling ──────────────────────────────────────────────────────
+
+static float g_dpiScale = 1.0f;
+static inline int S(int x) { return (int)(x * g_dpiScale + 0.5f); }
+
 // ── edit control subclass to forward mouse wheel to card panel ──────
 
 static WNDPROC g_oldEditProc = nullptr;
@@ -109,8 +114,8 @@ static void reload_data(CardPanelData* pd) {
 }
 
 static int card_height(const ClipEntry& e) {
-    if (e.content_type == 1) return IMAGE_CARD_HEIGHT;
-    return TEXT_CARD_HEIGHT; // text and files share same height
+    if (e.content_type == 1) return S(IMAGE_CARD_HEIGHT);
+    return S(TEXT_CARD_HEIGHT); // text and files share same height
 }
 
 // ── window proc ──────────────────────────────────────────────────────
@@ -123,14 +128,17 @@ static LRESULT CALLBACK CardPanelWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
         pd = new CardPanelData();
         SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)pd);
 
-        // Create fonts
-        pd->hFont = CreateFontW(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        // Read DPI scale for this window
+        g_dpiScale = GetDpiForWindow(hwnd) / 96.0f;
+
+        // Create fonts (scaled to DPI)
+        pd->hFont = CreateFontW(S(16), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-        pd->hSmallFont = CreateFontW(13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        pd->hSmallFont = CreateFontW(S(13), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-        pd->hBoldFont = CreateFontW(16, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+        pd->hBoldFont = CreateFontW(S(16), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
             CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
 
@@ -138,7 +146,7 @@ static LRESULT CALLBACK CardPanelWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
         HINSTANCE hInst = (HINSTANCE)GetWindowLongPtr(GetParent(hwnd), GWLP_HINSTANCE);
         pd->hSearchEdit = CreateWindowExW(0, L"EDIT", L"",
             WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | WS_BORDER,
-            8, 6, 200, 24, hwnd, nullptr, hInst, nullptr);
+            S(8), S(6), S(200), S(24), hwnd, nullptr, hInst, nullptr);
         SendMessageW(pd->hSearchEdit, WM_SETFONT, (WPARAM)pd->hFont, TRUE);
         SendMessageW(pd->hSearchEdit, EM_SETCUEBANNER, TRUE,
             (LPARAM)L"\u641C\u7D22\u5386\u53F2\u8BB0\u5F55...");
@@ -149,13 +157,35 @@ static LRESULT CALLBACK CardPanelWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
         return 0;
     }
 
+    case WM_DPICHANGED: {
+        g_dpiScale = GetDpiForWindow(hwnd) / 96.0f;
+        if (pd->hFont) DeleteObject(pd->hFont);
+        if (pd->hSmallFont) DeleteObject(pd->hSmallFont);
+        if (pd->hBoldFont) DeleteObject(pd->hBoldFont);
+        pd->hFont = CreateFontW(S(16), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+        pd->hSmallFont = CreateFontW(S(13), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+        pd->hBoldFont = CreateFontW(S(16), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+        SendMessageW(pd->hSearchEdit, WM_SETFONT, (WPARAM)pd->hFont, TRUE);
+        int editW = pd->panelWidth - S(16);
+        if (editW < S(100)) editW = S(100);
+        SetWindowPos(pd->hSearchEdit, nullptr, S(8), S(6), editW, S(26), SWP_NOZORDER);
+        InvalidateRect(hwnd, nullptr, FALSE);
+        return 0;
+    }
+
     case WM_SIZE: {
         pd->panelWidth = LOWORD(lp);
         pd->panelHeight = HIWORD(lp);
         // Resize search edit
-        int editW = pd->panelWidth - 16;
-        if (editW < 100) editW = 100;
-        SetWindowPos(pd->hSearchEdit, nullptr, 8, 6, editW, 26, SWP_NOZORDER);
+        int editW = pd->panelWidth - S(16);
+        if (editW < S(100)) editW = S(100);
+        SetWindowPos(pd->hSearchEdit, nullptr, S(8), S(6), editW, S(26), SWP_NOZORDER);
         InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
     }
@@ -173,7 +203,7 @@ static LRESULT CALLBACK CardPanelWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
         int delta = GET_WHEEL_DELTA_WPARAM(wp) / WHEEL_DELTA;
         pd->scrollPos -= delta * 40;
         if (pd->scrollPos < 0) pd->scrollPos = 0;
-        int visH = pd->panelHeight - SEARCH_BAR_HEIGHT - DATE_BAR_HEIGHT - STATUS_BAR_H;
+        int visH = pd->panelHeight - S(SEARCH_BAR_HEIGHT) - S(DATE_BAR_HEIGHT) - S(STATUS_BAR_H);
         int maxScroll = pd->totalContentH - visH;
         if (maxScroll < 0) maxScroll = 0;
         if (pd->scrollPos > maxScroll) pd->scrollPos = maxScroll;
@@ -183,13 +213,13 @@ static LRESULT CALLBACK CardPanelWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
     }
 
     case WM_VSCROLL: {
-        int visH = pd->panelHeight - SEARCH_BAR_HEIGHT - DATE_BAR_HEIGHT - STATUS_BAR_H;
+        int visH = pd->panelHeight - S(SEARCH_BAR_HEIGHT) - S(DATE_BAR_HEIGHT) - S(STATUS_BAR_H);
         int maxScroll = pd->totalContentH - visH;
         if (maxScroll < 0) maxScroll = 0;
 
         switch (LOWORD(wp)) {
-        case SB_LINEUP:        pd->scrollPos -= 24; break;
-        case SB_LINEDOWN:      pd->scrollPos += 24; break;
+        case SB_LINEUP:        pd->scrollPos -= S(24); break;
+        case SB_LINEDOWN:      pd->scrollPos += S(24); break;
         case SB_PAGEUP:        pd->scrollPos -= visH; break;
         case SB_PAGEDOWN:      pd->scrollPos += visH; break;
         case SB_THUMBTRACK:
@@ -253,11 +283,11 @@ static LRESULT CALLBACK CardPanelWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
             cr.bottom -= pd->scrollPos;
 
             // Pin button area (top-left of card)
-            RECT pr = { cr.left + 8, cr.top + 4, cr.left + 36, cr.top + 28 };
+            RECT pr = { cr.left + S(8), cr.top + S(4), cr.left + S(36), cr.top + S(28) };
             // Delete button area (top-right of card, full height)
             int ch = cl.cardRect.bottom - cl.cardRect.top;
-            int delX = cr.right - DELETE_BTN_WIDTH - CARD_PADDING;
-            RECT dr = { delX, cr.top + 2, cr.right - CARD_PADDING, cr.top + ch - 2 };
+            int delX = cr.right - S(DELETE_BTN_WIDTH) - S(CARD_PADDING);
+            RECT dr = { delX, cr.top + S(2), cr.right - S(CARD_PADDING), cr.top + ch - S(2) };
 
             if (mx >= pr.left && mx <= pr.right && my >= pr.top && my <= pr.bottom) {
                 db_toggle_pin(pd->filtered[cl.entryIndex].id);
@@ -307,9 +337,6 @@ static LRESULT CALLBACK CardPanelWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
                         clipboard_set_image(fullImg.data(), fullImg.size());
                     }
                 }
-                // Flash feedback: briefly change card color or show tooltip
-                // ponytail: simple beep as feedback, visual flash if users complain
-                MessageBeep(MB_OK);
                 break;
             }
         }
@@ -339,31 +366,33 @@ static LRESULT CALLBACK CardPanelWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
 
         // Draw search bar separator
         Gdiplus::Pen sepPen(SEPARATOR_COLOR, 1.0f);
-        g.DrawLine(&sepPen, 0, SEARCH_BAR_HEIGHT, w, SEARCH_BAR_HEIGHT);
+        g.DrawLine(&sepPen, 0, S(SEARCH_BAR_HEIGHT), w, S(SEARCH_BAR_HEIGHT));
 
         // Pin filter toggle button
         Gdiplus::SolidBrush pinBtnBrush(pd->showPinnedOnly ? PINNED_COLOR : DIM_COLOR);
-        g.FillRectangle(&pinBtnBrush, w - 40, 8, 32, 22);
+        g.FillRectangle(&pinBtnBrush, w - S(40), S(8), S(32), S(22));
         Gdiplus::Font pinFont(L"Segoe UI", 12);
         Gdiplus::SolidBrush whiteBrush(Gdiplus::Color::White);
         Gdiplus::StringFormat sf;
         sf.SetAlignment(Gdiplus::StringAlignmentCenter);
         sf.SetLineAlignment(Gdiplus::StringAlignmentCenter);
-        g.DrawString(L"◆", -1, &pinFont, Gdiplus::RectF(w - 40, 8, 32, 22), &sf, &whiteBrush);
+        g.DrawString(L"◆", -1, &pinFont,
+            Gdiplus::RectF((Gdiplus::REAL)(w - S(40)), (Gdiplus::REAL)S(8),
+                (Gdiplus::REAL)S(32), (Gdiplus::REAL)S(22)), &sf, &whiteBrush);
 
         // Card area starts below search bar + date buttons
-        int startY = SEARCH_BAR_HEIGHT + DATE_BAR_HEIGHT + CARD_GAP;
+        int startY = S(SEARCH_BAR_HEIGHT) + S(DATE_BAR_HEIGHT) + S(CARD_GAP);
         pd->layouts.clear();
 
         // Draw date filter buttons
         {
             const wchar_t* labels[] = { L"今天", L"昨天", L"最近7天" };
-            int btnW = 64, btnH = 20;
-            int btnY = SEARCH_BAR_HEIGHT + 2;
+            int btnW = S(64), btnH = S(20);
+            int btnY = S(SEARCH_BAR_HEIGHT) + S(2);
             Gdiplus::Font btnFont(L"Segoe UI", 10);
 
             for (int i = 0; i < 3; i++) {
-                int btnX = 12 + i * (btnW + 6);
+                int btnX = S(12) + i * (btnW + S(6));
                 bool active = (pd->dateFilter == i + 1);
                 pd->dateBtnRects[i] = { btnX, btnY, btnX + btnW, btnY + btnH };
 
@@ -385,12 +414,12 @@ static LRESULT CALLBACK CardPanelWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
         // Draw type filter buttons (right side of date button row)
         {
             const wchar_t* typeLabels[] = { L"文本", L"图片", L"文件" };
-            int btnW = 50, btnH = 20;
-            int btnY = SEARCH_BAR_HEIGHT + 2;
+            int btnW = S(50), btnH = S(20);
+            int btnY = S(SEARCH_BAR_HEIGHT) + S(2);
             Gdiplus::Font btnFont(L"Segoe UI", 10);
 
             for (int i = 0; i < 3; i++) {
-                int btnX = w - 16 - (3 - i) * (btnW + 5);
+                int btnX = w - S(16) - (3 - i) * (btnW + S(5));
                 bool active = (pd->typeFilter == i + 1);
                 pd->typeBtnRects[i] = { btnX, btnY, btnX + btnW, btnY + btnH };
 
@@ -410,7 +439,7 @@ static LRESULT CALLBACK CardPanelWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
         }
 
         // Compute card positions (without scroll offset, for layout tracking)
-        int cardW = w - 16; // 8px margin each side
+        int cardW = w - S(16); // 8px margin each side
         int y = startY;
 
         for (size_t i = 0; i < pd->filtered.size(); i++) {
@@ -420,11 +449,11 @@ static LRESULT CALLBACK CardPanelWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
             cl.entryIndex = (int)i;
 
             // Card rect
-            cl.cardRect.left = 8;
+            cl.cardRect.left = S(8);
             cl.cardRect.top = y;
-            cl.cardRect.right = 8 + cardW;
+            cl.cardRect.right = S(8) + cardW;
             cl.cardRect.bottom = y + ch;
-            y += ch + CARD_GAP;
+            y += ch + S(CARD_GAP);
 
             pd->layouts.push_back(cl);
         }
@@ -436,7 +465,7 @@ static LRESULT CALLBACK CardPanelWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
         si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
         si.nMin = 0;
         si.nMax = pd->totalContentH;
-        int visH = h - startY - STATUS_BAR_H;
+        int visH = h - startY - S(STATUS_BAR_H);
         if (visH < 1) visH = 1;
         si.nPage = visH;
         si.nPos = pd->scrollPos;
@@ -447,14 +476,14 @@ static LRESULT CALLBACK CardPanelWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
         if (pd->scrollPos > maxScroll) pd->scrollPos = maxScroll;
 
         // Clip to card area and draw
-        g.SetClip(Gdiplus::Rect(0, startY, w, h - startY - STATUS_BAR_H));
+        g.SetClip(Gdiplus::Rect(0, startY, w, h - startY - S(STATUS_BAR_H)));
 
         // Draw only visible cards
         for (auto& cl : pd->layouts) {
             int drawY = cl.cardRect.top - pd->scrollPos;
             int cardBottomVisible = drawY + (cl.cardRect.bottom - cl.cardRect.top);
 
-            if (cardBottomVisible < startY || drawY > h - STATUS_BAR_H) continue;
+            if (cardBottomVisible < startY || drawY > h - S(STATUS_BAR_H)) continue;
             if (drawY < startY) drawY = startY;
 
             ClipEntry& e = pd->filtered[cl.entryIndex];
@@ -468,7 +497,7 @@ static LRESULT CALLBACK CardPanelWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
             // Left accent for pinned items
             if (e.pinned) {
                 Gdiplus::SolidBrush pinAccent(PINNED_COLOR);
-                g.FillRectangle(&pinAccent, cl.cardRect.left, drawY, 3, ch);
+                g.FillRectangle(&pinAccent, cl.cardRect.left, drawY, S(3), ch);
             }
 
             // Pin icon
@@ -479,7 +508,9 @@ static LRESULT CALLBACK CardPanelWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
                 psf.SetAlignment(Gdiplus::StringAlignmentCenter);
                 psf.SetLineAlignment(Gdiplus::StringAlignmentCenter);
                 g.DrawString(e.pinned ? L"◆" : L"○", -1, &pf,
-                    Gdiplus::RectF(cl.cardRect.left + 4, drawY + 4, 28, 24), &psf, &pinBrush);
+                    Gdiplus::RectF((Gdiplus::REAL)(cl.cardRect.left + S(4)),
+                        (Gdiplus::REAL)(drawY + S(4)),
+                        (Gdiplus::REAL)S(28), (Gdiplus::REAL)S(24)), &psf, &pinBrush);
             }
 
             // Timestamp
@@ -493,7 +524,9 @@ static LRESULT CALLBACK CardPanelWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
 
                 Gdiplus::Font tf(L"Segoe UI", 10);
                 Gdiplus::SolidBrush dimBrush(DIM_COLOR);
-                g.DrawString(wtime, -1, &tf, Gdiplus::PointF(cl.cardRect.left + 42, drawY + 8), &dimBrush);
+                g.DrawString(wtime, -1, &tf,
+                    Gdiplus::PointF((Gdiplus::REAL)(cl.cardRect.left + S(42)),
+                        (Gdiplus::REAL)(drawY + S(8))), &dimBrush);
             }
 
             // Content preview
@@ -506,8 +539,10 @@ static LRESULT CALLBACK CardPanelWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
 
                 Gdiplus::Font cf(L"Segoe UI", 12);
                 Gdiplus::SolidBrush textBrush(TEXT_COLOR);
-                Gdiplus::RectF textArea(cl.cardRect.left + 42, drawY + 26,
-                    cardW - 42 - DELETE_BTN_WIDTH - 16, 20);
+                Gdiplus::RectF textArea((Gdiplus::REAL)(cl.cardRect.left + S(42)),
+                    (Gdiplus::REAL)(drawY + S(26)),
+                    (Gdiplus::REAL)(cardW - S(42) - S(DELETE_BTN_WIDTH) - S(16)),
+                    (Gdiplus::REAL)S(20));
                 g.DrawString(preview.c_str(), -1, &cf, textArea, nullptr, &textBrush);
             } else if (e.content_type == 2) {
                 // File paths — show first path as preview
@@ -524,8 +559,10 @@ static LRESULT CALLBACK CardPanelWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
 
                 Gdiplus::Font cf(L"Segoe UI", 12);
                 Gdiplus::SolidBrush textBrush(TEXT_COLOR);
-                Gdiplus::RectF textArea(cl.cardRect.left + 42 + 100, drawY + 26,
-                    cardW - 42 - 100 - DELETE_BTN_WIDTH - 16, 20);
+                Gdiplus::RectF textArea((Gdiplus::REAL)(cl.cardRect.left + S(42) + S(100)),
+                    (Gdiplus::REAL)(drawY + S(26)),
+                    (Gdiplus::REAL)(cardW - S(42) - S(100) - S(DELETE_BTN_WIDTH) - S(16)),
+                    (Gdiplus::REAL)S(20));
                 g.DrawString(fname.c_str(), -1, &cf, textArea, nullptr, &textBrush);
 
                 // File icon label — draw on content line, before filename
@@ -535,8 +572,9 @@ static LRESULT CALLBACK CardPanelWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
                 for (auto c : e.text) if (c == L'\n') fileCount++;
                 wchar_t countLabel[32];
                 swprintf_s(countLabel, L"[文件] %zu个", fileCount);
-                Gdiplus::RectF labelArea(cl.cardRect.left + 42, drawY + 26,
-                    100, 20);
+                Gdiplus::RectF labelArea((Gdiplus::REAL)(cl.cardRect.left + S(42)),
+                    (Gdiplus::REAL)(drawY + S(26)),
+                    (Gdiplus::REAL)S(100), (Gdiplus::REAL)S(20));
                 g.DrawString(countLabel, -1, &ff, labelArea, nullptr, &dimBrush);
             } else {
                 // Image thumbnail \u2014 use thumb_data (small) for fast rendering
@@ -549,12 +587,12 @@ static LRESULT CALLBACK CardPanelWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
                     Gdiplus::Bitmap* thumb = Gdiplus::Bitmap::FromStream(pStr);
                     if (thumb && thumb->GetLastStatus() == Gdiplus::Ok) {
                         // Scale to fit thumbnail area (below timestamp)
-                        float scaleW = (float)THUMB_SIZE / thumb->GetWidth();
-                        float scaleH = (float)(ch - 26) / thumb->GetHeight();
+                        float scaleW = (float)S(THUMB_SIZE) / thumb->GetWidth();
+                        float scaleH = (float)(ch - S(26)) / thumb->GetHeight();
                         float scale = (scaleW < scaleH) ? scaleW : scaleH;
                         int dw = (int)(thumb->GetWidth() * scale);
                         int dh = (int)(thumb->GetHeight() * scale);
-                        g.DrawImage(thumb, cl.cardRect.left + 42, drawY + 22, dw, dh);
+                        g.DrawImage(thumb, cl.cardRect.left + S(42), drawY + S(22), dw, dh);
                     }
                     if (thumb) delete thumb;
                     pStr->Release();
@@ -562,20 +600,22 @@ static LRESULT CALLBACK CardPanelWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
                 Gdiplus::Font cf(L"Segoe UI", 10);
                 Gdiplus::SolidBrush dimBrush(DIM_COLOR);
                 g.DrawString(L"[\u56FE\u7247]", -1, &cf,
-                    Gdiplus::PointF(cl.cardRect.left + 42 + THUMB_SIZE + 8, drawY + 30), &dimBrush);
+                    Gdiplus::PointF((Gdiplus::REAL)(cl.cardRect.left + S(42) + S(THUMB_SIZE) + S(8)),
+                        (Gdiplus::REAL)(drawY + S(30))), &dimBrush);
             }
 
             // Delete button
             {
                 Gdiplus::Font df(L"Segoe UI", 12, Gdiplus::FontStyleBold);
                 Gdiplus::SolidBrush delBrush(DELETE_COLOR);
-                int dx = cl.cardRect.right - DELETE_BTN_WIDTH - CARD_PADDING;
+                int dx = cl.cardRect.right - S(DELETE_BTN_WIDTH) - S(CARD_PADDING);
                 Gdiplus::StringFormat dsf;
                 dsf.SetAlignment(Gdiplus::StringAlignmentCenter);
                 dsf.SetLineAlignment(Gdiplus::StringAlignmentCenter);
                 g.DrawString(L"×", -1, &df,
-                    Gdiplus::RectF((Gdiplus::REAL)dx, (Gdiplus::REAL)(drawY + 4),
-                        (Gdiplus::REAL)DELETE_BTN_WIDTH, (Gdiplus::REAL)(ch - 8)), &dsf, &delBrush);
+                    Gdiplus::RectF((Gdiplus::REAL)dx, (Gdiplus::REAL)(drawY + S(4)),
+                        (Gdiplus::REAL)S(DELETE_BTN_WIDTH), (Gdiplus::REAL)(ch - S(8))),
+                    &dsf, &delBrush);
             }
 
             // Card shadow/border — bottom line only for simplicity
@@ -587,27 +627,30 @@ static LRESULT CALLBACK CardPanelWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
         // Status bar
         g.SetClip(Gdiplus::Rect(0, 0, w, h));
         Gdiplus::Pen statusLine(SEPARATOR_COLOR, 1.0f);
-        g.DrawLine(&statusLine, 0, h - STATUS_BAR_H, w, h - STATUS_BAR_H);
+        g.DrawLine(&statusLine, 0, h - S(STATUS_BAR_H), w, h - S(STATUS_BAR_H));
 
         wchar_t status[128];
         swprintf_s(status, L"\u5171 %zu \u6761\u8BB0\u5F55  |  \u53CC\u51FB\u5361\u7247\u590D\u5236\u5230\u526A\u8D34\u677F",
             pd->filtered.size());
         Gdiplus::Font statusFont(L"Segoe UI", 10);
         Gdiplus::SolidBrush statusBrush(DIM_COLOR);
-        g.DrawString(status, -1, &statusFont, Gdiplus::PointF(12, h - STATUS_BAR_H + 4), &statusBrush);
+        g.DrawString(status, -1, &statusFont,
+            Gdiplus::PointF((Gdiplus::REAL)S(12), (Gdiplus::REAL)(h - S(STATUS_BAR_H) + S(4))),
+            &statusBrush);
 
         // "\u6E05\u7A7A\u5168\u90E8" button (right side of status bar)
         {
             const wchar_t* clearText = L"\u6E05\u7A7A\u5168\u90E8";
             Gdiplus::Font clearFont(L"Segoe UI", 10, Gdiplus::FontStyleUnderline);
             Gdiplus::SolidBrush clearBrush(DELETE_COLOR);
-            Gdiplus::RectF clearLayout((Gdiplus::REAL)(w - 80), (Gdiplus::REAL)(h - STATUS_BAR_H + 3),
-                (Gdiplus::REAL)70, (Gdiplus::REAL)(STATUS_BAR_H - 3));
+            Gdiplus::RectF clearLayout((Gdiplus::REAL)(w - S(80)),
+                (Gdiplus::REAL)(h - S(STATUS_BAR_H) + S(3)),
+                (Gdiplus::REAL)S(70), (Gdiplus::REAL)(S(STATUS_BAR_H) - S(3)));
             Gdiplus::StringFormat clearSf;
             clearSf.SetAlignment(Gdiplus::StringAlignmentFar);
             g.DrawString(clearText, -1, &clearFont, clearLayout, &clearSf, &clearBrush);
             // Track button area for click detection
-            pd->clearAllRect = { w - 80, h - STATUS_BAR_H, w, h };
+            pd->clearAllRect = { w - S(80), h - S(STATUS_BAR_H), w, h };
         }
 
         // Blit to screen
