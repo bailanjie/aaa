@@ -17,10 +17,10 @@ static const int SEARCH_BAR_HEIGHT = 36;
 static const int CARD_PADDING = 6;
 static const int CARD_GAP = 4;
 static const int TEXT_CARD_HEIGHT = 48;
-static const int IMAGE_CARD_HEIGHT = 72;
+static const int IMAGE_CARD_HEIGHT = 48;
 static const int PIN_BTN_WIDTH = 28;
 static const int DELETE_BTN_WIDTH = 22;
-static const int THUMB_SIZE = 56;
+static const int THUMB_SIZE = 40;
 static const int STATUS_BAR_H = 24;
 static const int DATE_BAR_HEIGHT = 24;
 
@@ -116,6 +116,189 @@ static void reload_data(CardPanelData* pd) {
 static int card_height(const ClipEntry& e) {
     if (e.content_type == 1) return S(IMAGE_CARD_HEIGHT);
     return S(TEXT_CARD_HEIGHT); // text and files share same height
+}
+
+// ── right-click preview popup ────────────────────────────────────────
+
+static HWND g_previewHwnd = nullptr;
+static const wchar_t* PREVIEW_CLASS = L"ClipboardHistoryPreview";
+static const int PREVIEW_IMAGE_MAX = 400;  // max side length (px, DPI-scaled via S())
+
+struct PreviewData {
+    Gdiplus::Bitmap* bmp = nullptr;  // non-null => image preview
+    std::wstring text;               // full text / file paths (text & file preview)
+    HWND edit = nullptr;
+    HFONT hFont = nullptr;
+    float zoom = 1.0f;               // image zoom factor (wheel)
+    int baseW = 0, baseH = 0;        // initial "fit" window size
+};
+
+static LRESULT CALLBACK PreviewWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    PreviewData* pd = (PreviewData*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+    switch (msg) {
+    case WM_CREATE: {
+        pd = (PreviewData*)((CREATESTRUCTW*)lp)->lpCreateParams;
+        SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)pd);
+        return 0;
+    }
+    case WM_NCHITTEST: {
+        LRESULT hit = DefWindowProc(hwnd, msg, wp, lp);
+        // Drag the image preview by its client area (acts as a caption)
+        if (hit == HTCLIENT && pd && pd->bmp) return HTCAPTION;
+        return hit;
+    }
+    case WM_NCRBUTTONUP: {
+        // Right-click on the image preview closes it
+        DestroyWindow(hwnd);
+        return 0;
+    }
+    case WM_SIZE: {
+        if (pd && pd->edit) {
+            RECT rc; GetClientRect(hwnd, &rc);
+            SetWindowPos(pd->edit, nullptr, 0, 0, rc.right, rc.bottom, SWP_NOZORDER);
+        }
+        return 0;
+    }
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+        if (pd && pd->bmp) {
+            RECT rc; GetClientRect(hwnd, &rc);
+            Gdiplus::Graphics g(hdc);
+            g.SetSmoothingMode(Gdiplus::SmoothingModeHighQuality);
+            Gdiplus::SolidBrush bg(Gdiplus::Color::White);
+            g.FillRectangle(&bg, 0, 0, rc.right, rc.bottom);
+            float scaleW = (float)rc.right / pd->bmp->GetWidth();
+            float scaleH = (float)rc.bottom / pd->bmp->GetHeight();
+            float scale = (scaleW < scaleH) ? scaleW : scaleH;
+            int dw = (int)(pd->bmp->GetWidth() * scale);
+            int dh = (int)(pd->bmp->GetHeight() * scale);
+            g.DrawImage(pd->bmp, (rc.right - dw) / 2, (rc.bottom - dh) / 2, dw, dh);
+        }
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_MOUSEWHEEL: {
+        // Zoom image preview in/out (text preview scrolls via its own EDIT child)
+        if (pd && pd->bmp && pd->baseW > 0) {
+            int delta = GET_WHEEL_DELTA_WPARAM(wp);
+            pd->zoom *= (delta > 0) ? 1.1f : (1.0f / 1.1f);
+            if (pd->zoom < 0.2f) pd->zoom = 0.2f;
+            if (pd->zoom > 8.0f) pd->zoom = 8.0f;
+
+            int nw = (int)(pd->baseW * pd->zoom);
+            int nh = (int)(pd->baseH * pd->zoom);
+            if (nw < 40) nw = 40;
+            if (nh < 40) nh = 40;
+            int sw = GetSystemMetrics(SM_CXSCREEN) - 20;
+            int sh = GetSystemMetrics(SM_CYSCREEN) - 20;
+            if (nw > sw) nw = sw;
+            if (nh > sh) nh = sh;
+            SetWindowPos(hwnd, nullptr, 0, 0, nw, nh, SWP_NOMOVE | SWP_NOZORDER);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+        break;
+    }
+    case WM_KEYDOWN: {
+        if (wp == VK_ESCAPE) DestroyWindow(hwnd);
+        return 0;
+    }
+    case WM_ACTIVATE: {
+        // WM_ACTIVATE (not WM_KILLFOCUS) so the EDIT child taking focus doesn't close us
+        if (LOWORD(wp) == WA_INACTIVE) DestroyWindow(hwnd);
+        return 0;
+    }
+    case WM_DESTROY: {
+        if (pd) {
+            if (pd->bmp) delete pd->bmp;
+            if (pd->hFont) DeleteObject(pd->hFont);
+            delete pd;
+        }
+        if (g_previewHwnd == hwnd) g_previewHwnd = nullptr;
+        return 0;
+    }
+    }
+    return DefWindowProc(hwnd, msg, wp, lp);
+}
+
+static void preview_show(const ClipEntry& e, POINT anchor) {
+    // Only one preview at a time
+    if (g_previewHwnd && IsWindow(g_previewHwnd)) DestroyWindow(g_previewHwnd);
+    g_previewHwnd = nullptr;
+
+    PreviewData* pd = new PreviewData();
+    int winW = 0, winH = 0;
+
+    if (e.content_type == 1) {
+        // Load + decode full image on demand (list only holds the thumbnail)
+        std::vector<uint8_t> blob = db_get_image_blob(e.id);
+        if (!blob.empty()) {
+            HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, blob.size());
+            CopyMemory(GlobalLock(hMem), blob.data(), blob.size());
+            GlobalUnlock(hMem);
+            IStream* pStr = nullptr;
+            CreateStreamOnHGlobal(hMem, TRUE, &pStr);
+            pd->bmp = Gdiplus::Bitmap::FromStream(pStr);
+            pStr->Release();
+        }
+        if (!pd->bmp || pd->bmp->GetLastStatus() != Gdiplus::Ok) {
+            if (pd->bmp) delete pd->bmp;
+            delete pd;
+            return;
+        }
+        int iw = pd->bmp->GetWidth();
+        int ih = pd->bmp->GetHeight();
+        int maxSide = S(PREVIEW_IMAGE_MAX);
+        float scaleW = (float)maxSide / iw;
+        float scaleH = (float)maxSide / ih;
+        float scale = (scaleW < scaleH) ? scaleW : scaleH;
+        if (scale > 1.0f) scale = 1.0f; // don't upscale small images
+        winW = (int)(iw * scale);
+        winH = (int)(ih * scale);
+        pd->baseW = winW;
+        pd->baseH = winH;
+    } else {
+        pd->text = e.text;
+        winW = S(420);
+        winH = S(300);
+    }
+
+    int sw = GetSystemMetrics(SM_CXSCREEN);
+    int sh = GetSystemMetrics(SM_CYSCREEN);
+    int x = anchor.x;
+    int y = anchor.y;
+    if (x + winW > sw) x = sw - winW;
+    if (y + winH > sh) y = sh - winH;
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+
+    HINSTANCE hInst = GetModuleHandleW(nullptr);
+    HWND h = CreateWindowExW(WS_EX_TOPMOST, PREVIEW_CLASS, L"",
+        WS_POPUP | WS_BORDER | WS_CLIPCHILDREN, x, y, winW, winH, nullptr, nullptr, hInst, pd);
+    if (!h) {
+        if (pd->bmp) delete pd->bmp;
+        delete pd;
+        return;
+    }
+
+    // Text/file preview: create the multiline read-only EDIT with explicit size
+    // (matches the search-edit pattern) after the window is sized.
+    if (!pd->bmp) {
+        RECT rc; GetClientRect(h, &rc);
+        pd->hFont = CreateFontW(-S(16), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+        pd->edit = CreateWindowExW(0, L"EDIT", L"",
+            WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_LEFT,
+            0, 0, rc.right, rc.bottom, h, nullptr, hInst, nullptr);
+        SendMessageW(pd->edit, WM_SETFONT, (WPARAM)pd->hFont, TRUE);
+        SetWindowTextW(pd->edit, pd->text.c_str());
+    }
+
+    g_previewHwnd = h;
+    ShowWindow(h, SW_SHOW);
+    SetForegroundWindow(h);
 }
 
 // ── window proc ──────────────────────────────────────────────────────
@@ -343,6 +526,26 @@ static LRESULT CALLBACK CardPanelWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
         return 0;
     }
 
+    case WM_RBUTTONUP: {
+        int mx = GET_X_LPARAM(lp);
+        int my = GET_Y_LPARAM(lp);
+
+        for (auto& cl : pd->layouts) {
+            RECT cr = cl.cardRect;
+            cr.top -= pd->scrollPos;
+            cr.bottom -= pd->scrollPos;
+
+            if (mx >= cr.left && mx <= cr.right &&
+                my >= cr.top && my <= cr.bottom) {
+                POINT anchor = { cr.right, cr.top };
+                ClientToScreen(hwnd, &anchor);
+                preview_show(pd->filtered[cl.entryIndex], anchor);
+                break;
+            }
+        }
+        return 0;
+    }
+
     case WM_PAINT: {
         PAINTSTRUCT ps;
         HDC hdc = BeginPaint(hwnd, &ps);
@@ -540,9 +743,9 @@ static LRESULT CALLBACK CardPanelWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
                 Gdiplus::Font cf(L"Segoe UI", 12);
                 Gdiplus::SolidBrush textBrush(TEXT_COLOR);
                 Gdiplus::RectF textArea((Gdiplus::REAL)(cl.cardRect.left + S(42)),
-                    (Gdiplus::REAL)(drawY + S(26)),
+                    (Gdiplus::REAL)(drawY + S(24)),
                     (Gdiplus::REAL)(cardW - S(42) - S(DELETE_BTN_WIDTH) - S(16)),
-                    (Gdiplus::REAL)S(20));
+                    (Gdiplus::REAL)S(22));
                 g.DrawString(preview.c_str(), -1, &cf, textArea, nullptr, &textBrush);
             } else if (e.content_type == 2) {
                 // File paths — show first path as preview
@@ -560,9 +763,9 @@ static LRESULT CALLBACK CardPanelWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
                 Gdiplus::Font cf(L"Segoe UI", 12);
                 Gdiplus::SolidBrush textBrush(TEXT_COLOR);
                 Gdiplus::RectF textArea((Gdiplus::REAL)(cl.cardRect.left + S(42) + S(100)),
-                    (Gdiplus::REAL)(drawY + S(26)),
+                    (Gdiplus::REAL)(drawY + S(24)),
                     (Gdiplus::REAL)(cardW - S(42) - S(100) - S(DELETE_BTN_WIDTH) - S(16)),
-                    (Gdiplus::REAL)S(20));
+                    (Gdiplus::REAL)S(22));
                 g.DrawString(fname.c_str(), -1, &cf, textArea, nullptr, &textBrush);
 
                 // File icon label — draw on content line, before filename
@@ -573,8 +776,8 @@ static LRESULT CALLBACK CardPanelWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
                 wchar_t countLabel[32];
                 swprintf_s(countLabel, L"[文件] %zu个", fileCount);
                 Gdiplus::RectF labelArea((Gdiplus::REAL)(cl.cardRect.left + S(42)),
-                    (Gdiplus::REAL)(drawY + S(26)),
-                    (Gdiplus::REAL)S(100), (Gdiplus::REAL)S(20));
+                    (Gdiplus::REAL)(drawY + S(24)),
+                    (Gdiplus::REAL)S(100), (Gdiplus::REAL)S(22));
                 g.DrawString(countLabel, -1, &ff, labelArea, nullptr, &dimBrush);
             } else {
                 // Image thumbnail \u2014 use thumb_data (small) for fast rendering
@@ -586,22 +789,30 @@ static LRESULT CALLBACK CardPanelWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
                     CreateStreamOnHGlobal(hMem, TRUE, &pStr);
                     Gdiplus::Bitmap* thumb = Gdiplus::Bitmap::FromStream(pStr);
                     if (thumb && thumb->GetLastStatus() == Gdiplus::Ok) {
-                        // Scale to fit thumbnail area (below timestamp)
+                        // Scale to fit THUMB_SIZE x THUMB_SIZE, preserve aspect ratio
                         float scaleW = (float)S(THUMB_SIZE) / thumb->GetWidth();
-                        float scaleH = (float)(ch - S(26)) / thumb->GetHeight();
+                        float scaleH = (float)S(THUMB_SIZE) / thumb->GetHeight();
                         float scale = (scaleW < scaleH) ? scaleW : scaleH;
                         int dw = (int)(thumb->GetWidth() * scale);
                         int dh = (int)(thumb->GetHeight() * scale);
-                        g.DrawImage(thumb, cl.cardRect.left + S(42), drawY + S(22), dw, dh);
+                        // Center thumbnail in the card
+                        int cx = (cl.cardRect.left + cl.cardRect.right) / 2;
+                        int cy = drawY + ch / 2;
+                        g.DrawImage(thumb, cx - dw / 2, cy - dh / 2, dw, dh);
                     }
                     if (thumb) delete thumb;
                     pStr->Release();
+                } else {
+                    Gdiplus::Font cf(L"Segoe UI", 10);
+                    Gdiplus::SolidBrush dimBrush(DIM_COLOR);
+                    Gdiplus::StringFormat imgSf;
+                    imgSf.SetAlignment(Gdiplus::StringAlignmentCenter);
+                    imgSf.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+                    g.DrawString(L"[\u56FE\u7247]", -1, &cf,
+                        Gdiplus::RectF((Gdiplus::REAL)cl.cardRect.left, (Gdiplus::REAL)drawY,
+                            (Gdiplus::REAL)(cl.cardRect.right - cl.cardRect.left), (Gdiplus::REAL)ch),
+                        &imgSf, &dimBrush);
                 }
-                Gdiplus::Font cf(L"Segoe UI", 10);
-                Gdiplus::SolidBrush dimBrush(DIM_COLOR);
-                g.DrawString(L"[\u56FE\u7247]", -1, &cf,
-                    Gdiplus::PointF((Gdiplus::REAL)(cl.cardRect.left + S(42) + S(THUMB_SIZE) + S(8)),
-                        (Gdiplus::REAL)(drawY + S(30))), &dimBrush);
             }
 
             // Delete button
@@ -689,6 +900,16 @@ void card_panel_register_class(HINSTANCE hInst) {
     wc.hbrBackground = nullptr; // Handled in WM_PAINT
     wc.lpszClassName = CARD_PANEL_CLASS;
     RegisterClassExW(&wc);
+
+    WNDCLASSEXW pwc = {};
+    pwc.cbSize = sizeof(pwc);
+    pwc.style = CS_DBLCLKS;
+    pwc.lpfnWndProc = PreviewWndProc;
+    pwc.hInstance = hInst;
+    pwc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    pwc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    pwc.lpszClassName = PREVIEW_CLASS;
+    RegisterClassExW(&pwc);
 }
 
 HWND card_panel_create(HWND parent, int id, HINSTANCE hInst) {
