@@ -24,7 +24,8 @@ std::vector<std::wstring> clipboard_read_files();
 
 // Restore content to clipboard.
 // After calling this, the content will be available for Ctrl+V.
-// These automatically suppress the next WM_CLIPBOARDUPDATE to avoid re-logging.
+// The write is matched by clipboard sequence number (see clipboard_consume_self_change)
+// so the app does not re-log its own change.
 bool clipboard_set_text(const std::wstring& text);
 bool clipboard_set_image(const uint8_t* png_data, size_t size);
 bool clipboard_set_files(const std::vector<std::wstring>& paths);

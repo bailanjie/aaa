@@ -214,25 +214,25 @@ std::vector<std::wstring> clipboard_read_files() {
 
 // ── self-change guard ────────────────────────────────────────────────
 
-// ponytail: simple flag, atomic if multiple clipboard watchers ever added
-static bool g_self_change = false;
+// ponytail: compare the clipboard sequence number instead of a bool flag.
+// A bool can get stuck (skipping every later copy after a missed notification)
+// or swallow a real copy in a race; a sequence mismatch only ever degrades to
+// a harmless self-duplicate.
+static DWORD g_self_change_seq = 0;
 
 bool clipboard_consume_self_change() {
-    bool was = g_self_change;
-    g_self_change = false;
-    return was;
+    return GetClipboardSequenceNumber() == g_self_change_seq;
 }
 
 // ── write to clipboard ───────────────────────────────────────────────
 
 bool clipboard_set_text(const std::wstring& text) {
-    g_self_change = true;
-    if (!OpenClipboard(nullptr)) { g_self_change = false; return false; }
+    if (!OpenClipboard(nullptr)) return false;
     EmptyClipboard();
 
     size_t bytes = (text.size() + 1) * sizeof(wchar_t);
     HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
-    if (!hMem) { g_self_change = false; CloseClipboard(); return false; }
+    if (!hMem) { CloseClipboard(); return false; }
 
     wchar_t* pMem = (wchar_t*)GlobalLock(hMem);
     wcscpy_s(pMem, text.size() + 1, text.c_str());
@@ -240,20 +240,20 @@ bool clipboard_set_text(const std::wstring& text) {
 
     if (!SetClipboardData(CF_UNICODETEXT, hMem)) {
         GlobalFree(hMem); // System didn't take ownership
-        g_self_change = false;
+    } else {
+        g_self_change_seq = GetClipboardSequenceNumber();
     }
     CloseClipboard();
     return true;
 }
 
 bool clipboard_set_image(const uint8_t* png_data, size_t size) {
-    g_self_change = true;
-    if (!OpenClipboard(nullptr)) { g_self_change = false; return false; }
+    if (!OpenClipboard(nullptr)) return false;
     EmptyClipboard();
 
     // Load PNG from memory into Gdi+ Bitmap
     HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, size);
-    if (!hMem) { g_self_change = false; CloseClipboard(); return false; }
+    if (!hMem) { CloseClipboard(); return false; }
     CopyMemory(GlobalLock(hMem), png_data, size);
     GlobalUnlock(hMem);
 
@@ -263,7 +263,6 @@ bool clipboard_set_image(const uint8_t* png_data, size_t size) {
     if (!bmp || bmp->GetLastStatus() != Gdiplus::Ok) {
         if (bmp) delete bmp;
         pStream->Release();
-        g_self_change = false;
         CloseClipboard();
         return false;
     }
@@ -273,7 +272,6 @@ bool clipboard_set_image(const uint8_t* png_data, size_t size) {
     Gdiplus::Color bg(0, 0, 0, 0); // transparent background
     if (bmp->GetHBITMAP(bg, &hBmp) != Gdiplus::Ok) {
         delete bmp; pStream->Release();
-        g_self_change = false;
         CloseClipboard();
         return false;
     }
@@ -285,7 +283,6 @@ bool clipboard_set_image(const uint8_t* png_data, size_t size) {
     HGLOBAL hDib = GlobalAlloc(GMEM_MOVEABLE, dibSize);
     if (!hDib) {
         DeleteObject(hBmp); delete bmp; pStream->Release();
-        g_self_change = false;
         CloseClipboard();
         return false;
     }
@@ -308,7 +305,8 @@ bool clipboard_set_image(const uint8_t* png_data, size_t size) {
 
     if (!SetClipboardData(CF_DIB, hDib)) {
         GlobalFree(hDib);
-        g_self_change = false;
+    } else {
+        g_self_change_seq = GetClipboardSequenceNumber();
     }
 
     DeleteObject(hBmp);
@@ -319,8 +317,7 @@ bool clipboard_set_image(const uint8_t* png_data, size_t size) {
 }
 
 bool clipboard_set_files(const std::vector<std::wstring>& paths) {
-    g_self_change = true;
-    if (!OpenClipboard(nullptr)) { g_self_change = false; return false; }
+    if (!OpenClipboard(nullptr)) return false;
     EmptyClipboard();
 
     // Calculate buffer size for DROPFILES + path list (double-null terminated)
@@ -329,7 +326,7 @@ bool clipboard_set_files(const std::vector<std::wstring>& paths) {
 
     size_t bufSize = sizeof(DROPFILES) + totalChars * sizeof(wchar_t);
     HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bufSize);
-    if (!hMem) { g_self_change = false; CloseClipboard(); return false; }
+    if (!hMem) { CloseClipboard(); return false; }
 
     DROPFILES* pDrop = (DROPFILES*)GlobalLock(hMem);
     pDrop->pFiles = sizeof(DROPFILES);
@@ -349,7 +346,8 @@ bool clipboard_set_files(const std::vector<std::wstring>& paths) {
 
     if (!SetClipboardData(CF_HDROP, hMem)) {
         GlobalFree(hMem);
-        g_self_change = false;
+    } else {
+        g_self_change_seq = GetClipboardSequenceNumber();
     }
     CloseClipboard();
     return true;

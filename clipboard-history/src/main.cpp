@@ -244,7 +244,10 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             (HINSTANCE)GetWindowLongPtr(hwnd, GWLP_HINSTANCE));
 
         // Start clipboard monitoring
-        clipboard_start(hwnd);
+        if (!clipboard_start(hwnd)) {
+            MessageBoxW(hwnd, L"无法注册剪贴板监听，复制记录功能不可用",
+                APP_TITLE, MB_OK | MB_ICONWARNING);
+        }
 
         // System tray
         tray_add(hwnd);
