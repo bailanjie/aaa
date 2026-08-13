@@ -12,6 +12,8 @@ Windows 原生剪贴板历史管理工具，C++ / Win32 + GDI+ + SQLite 开发�
 - ✅ 日期筛选：全部 / 今天 / 昨天 / 最近 7 天
 - ✅ 置顶 / 删除单条、一键清空全部
 - ✅ 双击卡片复制回剪贴板，Ctrl+V 即可粘贴
+- ✅ 右键卡片预览完整内容（文本 / 原图）
+- ✅ 图片预览支持滚轮缩放、拖动、Esc / 右键关闭
 - ✅ 系统托盘常驻，Alt+C 呼出 / 隐藏窗口
 - ✅ 开机自启选项（托盘右键菜单）
 - ✅ 单实例运行，重复启动会唤出现有窗口
@@ -58,6 +60,7 @@ cmake --build build --config Release
 - 点击 **📌** — 置顶 / 取消置顶
 - 点击 **✕** — 删除此条记录
 - 双击卡片 — 复制到剪贴板
+- 右键卡片 — 弹出完整预览（文本 / 原图）
 - 底部 **清空全部** — 删除所有历史
 
 ### 筛选
@@ -87,7 +90,7 @@ clipboard-history/
 ├── build.ps1                 # run_build.bat 调用的 PowerShell 构建脚本
 ├── build.bat                 # 备选构建（NMake，需在开发者命令提示符里跑）
 ├── gen_icon.py               # 生成 res/app.ico 的脚本（纯标准库）
-├── resource.rc / resource.h  # Windows 资源（图标、版本信息）
+├── resource.rc / resource.h  # Windows 资源（图标、版本信息、应用清单）
 ├── src/
 │   ├── main.cpp              # 入口、窗口、托盘、热键、单实例
 │   ├── database.cpp/h        # SQLite CRUD 操作
@@ -97,5 +100,6 @@ clipboard-history/
 │   ├── sqlite3.c             # SQLite 源码（编译进 EXE）
 │   └── sqlite3.h
 └── res/
-    └── app.ico               # 应用图标（由 gen_icon.py 生成）
+    ├── app.ico               # 应用图标（由 gen_icon.py 生成）
+    └── app.manifest          # 应用清单（comctl32 v6 主题 + Per-Monitor V2 DPI）
 ```

@@ -232,7 +232,10 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             ensure_dir(appDataPath);
             wchar_t dbPath[MAX_PATH];
             swprintf_s(dbPath, L"%s\\history.db", appDataPath);
-            db_init(dbPath);
+            if (!db_init(dbPath)) {
+                MessageBoxW(hwnd, L"无法初始化历史数据库，历史记录功能不可用",
+                    APP_TITLE, MB_OK | MB_ICONWARNING);
+            }
         }
 
         // Create card panel

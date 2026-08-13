@@ -18,29 +18,6 @@ static int exists_callback(void* data, int argc, char** argv, char**) {
     return 0;
 }
 
-static bool check_duplicate(const std::wstring& text) {
-    // Check if text matches the most recent entry
-    sqlite3_stmt* stmt;
-    const char* sql = "SELECT text_content FROM clipboard_history ORDER BY id DESC LIMIT 1";
-    if (sqlite3_prepare_v2(g_db, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
-    bool dup = false;
-    if (sqlite3_step(stmt) == SQLITE_ROW) {
-        const char* last = (const char*)sqlite3_column_text(stmt, 0);
-        if (last) {
-            std::wstring lastText;
-            // last stored as UTF-8 in DB; decode for comparison is complex
-            // Simplify: store text as UTF-8 and compare as UTF-8
-            std::string textUtf8;
-            int len = WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, nullptr, 0, nullptr, nullptr);
-            textUtf8.resize(len - 1);
-            WideCharToMultiByte(CP_UTF8, 0, text.c_str(), -1, &textUtf8[0], len, nullptr, nullptr);
-            dup = (textUtf8 == last);
-        }
-    }
-    sqlite3_finalize(stmt);
-    return dup;
-}
-
 // ── public API ───────────────────────────────────────────────────────
 
 bool db_init(const wchar_t* dbPath) {

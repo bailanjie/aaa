@@ -1,3 +1,40 @@
 #include "resource.h"
 
 IDI_APP_ICON ICON "res/app.ico"
+
+// Application manifest: comctl32 v6 visual styles + Per-Monitor V2 DPI.
+// id=1 (CREATEPROCESS_MANIFEST_RESOURCE_ID), type=24 (RT_MANIFEST).
+1 24 "res/app.manifest"
+
+1 VERSIONINFO
+ FILEVERSION 1,0,2,0
+ PRODUCTVERSION 1,0,2,0
+ FILEFLAGSMASK 0x3fL
+#ifdef _DEBUG
+ FILEFLAGS 0x1L
+#else
+ FILEFLAGS 0x0L
+#endif
+ FILEOS 0x40004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "bailanjie"
+            VALUE "FileDescription", "Clipboard History Manager"
+            VALUE "FileVersion", "1.0.2"
+            VALUE "InternalName", "ClipboardHistory"
+            VALUE "LegalCopyright", "Copyright (C) 2026 bailanjie"
+            VALUE "OriginalFilename", "ClipboardHistory.exe"
+            VALUE "ProductName", "Clipboard History"
+            VALUE "ProductVersion", "1.0.2"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

@@ -58,7 +58,7 @@ if(MSVC)
     target_compile_options(${PROJECT_NAME} PRIVATE /W3)
     # Link as Windows GUI app (no console)
     set_target_properties(${PROJECT_NAME} PROPERTIES
-        LINK_FLAGS "/SUBSYSTEM:WINDOWS"
+        LINK_FLAGS "/SUBSYSTEM:WINDOWS /MANIFEST:NO"
     )
 endif()
 
